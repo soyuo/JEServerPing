@@ -3,7 +3,7 @@ const dns = require('dns').promises;
 
 (async () => {
     console.log(
-        await getMinecraftServerStatus('rendog.kr')
+        await getMinecraftServerStatus('27.123.9.221', 1799)
     );
 })();
 
@@ -33,18 +33,27 @@ async function resolveMinecraft(host, port = 25565) {
         }
     }
 
-    const ips = await dns.resolve4(target);
-    dnsLog.push(`${ips[0]}:${port}`);
-
-    return {
-        host: ips[0],
-        port,
-        logs: dnsLog
-    };
+    try {
+        const ips = await dns.resolve4(target);
+        dnsLog.push(`${ips[0]}:${port}`);
+        return {
+            host: ips[0],
+            port,
+            logs: dnsLog
+        };
+    } catch (e) {
+        return {
+            host: target,
+            port,
+            logs: dnsLog
+        };
+    }
 }
 
 function getMinecraftServerStatus(host, port = 25565, timeout = 5000) {
     return new Promise(async (resolve, reject) => {
+        const start = Date.now();
+        let end = 0;
         const resolved = await resolveMinecraft(host, port);
 
         const socket = new net.Socket();
@@ -87,6 +96,7 @@ function getMinecraftServerStatus(host, port = 25565, timeout = 5000) {
 
         socket.on('data', d => {
             chunks.push(d);
+            end = Date.now();
         });
         socket.on('end', () => ended = true);
 
@@ -94,7 +104,9 @@ function getMinecraftServerStatus(host, port = 25565, timeout = 5000) {
             if (!ended) return;
             try {
                 resolve(
-                    Object.assign({}, resolved, structChunk(chunks))
+                    Object.assign({
+                        ping: end - start
+                    }, resolved, structChunk(chunks))
                 );
             } catch (e) {
                 reject(e);
@@ -104,7 +116,9 @@ function getMinecraftServerStatus(host, port = 25565, timeout = 5000) {
         socket.on('timeout', () => {
             socket.destroy();
             resolve(
-                Object.assign({}, resolved, structChunk(chunks))
+                Object.assign({
+                    ping: end - start
+                }, resolved, structChunk(chunks))
             );
         });
 
