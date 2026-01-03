@@ -3,7 +3,7 @@ const dns = require('dns').promises;
 
 (async () => {
     console.log(
-        await getMinecraftServerStatus('topsilver.join.sudis.kr')
+        await getMinecraftServerStatus('rendog.kr')
     );
 })();
 
