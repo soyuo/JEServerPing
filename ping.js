@@ -3,7 +3,7 @@ const dns = require('dns').promises;
 
 (async () => {
     console.log(
-        await getMinecraftServerStatus('27.123.9.221', 1799)
+        await getMinecraftServerStatus('topsilver.join.sudis.kr')
     );
 })();
 
@@ -50,10 +50,8 @@ async function resolveMinecraft(host, port = 25565) {
     }
 }
 
-function getMinecraftServerStatus(host, port = 25565, timeout = 5000) {
+function getMinecraftServerStatus(host, port = 25565, timeout = 500) {
     return new Promise(async (resolve, reject) => {
-        const start = Date.now();
-        let end = 0;
         const resolved = await resolveMinecraft(host, port);
 
         const socket = new net.Socket();
@@ -61,6 +59,8 @@ function getMinecraftServerStatus(host, port = 25565, timeout = 5000) {
         let ended = false;
 
         socket.setTimeout(timeout);
+        let end = 0;
+        const start = Date.now();
 
         socket.connect({
             host: resolved.host,
