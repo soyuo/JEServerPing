@@ -1,10 +1,17 @@
 const net = require('net');
-const dns = require('dns').promises;
+const dns = require('node:dns');
+const dnsPromises = dns.promises;
+
+dns.setServers(['1.1.1.1', '8.8.8.8']);
 
 (async () => {
-    console.log(
-        await getMinecraftServerStatus('rendog.kr')
-    );
+    try {
+        console.log(
+            await getMinecraftServerStatus('rendog.kr')
+        );
+    } catch (e) {
+        console.error(e.message);
+    }
 })();
 
 async function resolveMinecraft(host, port = 25565) {
@@ -14,17 +21,24 @@ async function resolveMinecraft(host, port = 25565) {
     dnsLog.push(`${host}:${port}`);
 
     try {
-        const srv = await dns.resolveSrv(`_minecraft._tcp.${host}`);
+        const srv = await resolveWithTimeout(
+            dnsPromises.resolveSrv(`_minecraft._tcp.${host}`),
+            2000
+        );
         if (srv.length) {
-            target = srv[0].name;
-            port = srv[0].port;
+            const record = srv.sort((a, b) => a.priority - b.priority || b.weight - a.weight)[0];
+            target = record.name;
+            port = record.port;
             dnsLog.push(`${target}:${port}`);
         }
     } catch { }
 
     while (true) {
         try {
-            const cname = await dns.resolveCname(target);
+            const cname = await resolveWithTimeout(
+                dnsPromises.resolveCname(target),
+                2000
+            );
             if (!cname.length) break;
             target = cname[0];
             dnsLog.push(`${target}:${port}`);
@@ -34,7 +48,10 @@ async function resolveMinecraft(host, port = 25565) {
     }
 
     try {
-        const ips = await dns.resolve4(target);
+        const ips = await resolveWithTimeout(
+            dnsPromises.resolve4(target),
+            2000
+        );
         dnsLog.push(`${ips[0]}:${port}`);
         return {
             host: ips[0],
@@ -50,9 +67,25 @@ async function resolveMinecraft(host, port = 25565) {
     }
 }
 
-function getMinecraftServerStatus(host, port = 25565, timeout = 500) {
+function resolveWithTimeout(promise, timeout) {
+    return Promise.race([
+        promise,
+        new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('DNS lookup timeout')), timeout);
+        })
+    ]);
+}
+
+function getMinecraftServerStatus(host, port = 25565, timeout = 5000) {
     return new Promise(async (resolve, reject) => {
-        const resolved = await resolveMinecraft(host, port);
+        let resolved;
+
+        try {
+            resolved = await resolveMinecraft(host, port);
+        } catch (e) {
+            reject(e);
+            return;
+        }
 
         const socket = new net.Socket();
         let chunks = [];
@@ -115,11 +148,15 @@ function getMinecraftServerStatus(host, port = 25565, timeout = 500) {
 
         socket.on('timeout', () => {
             socket.destroy();
-            resolve(
-                Object.assign({
-                    ping: end - start
-                }, resolved, structChunk(chunks))
-            );
+            try {
+                resolve(
+                    Object.assign({
+                        ping: end - start
+                    }, resolved, structChunk(chunks))
+                );
+            } catch (e) {
+                reject(e);
+            }
         });
 
         socket.on('error', err => reject(err));
@@ -127,6 +164,10 @@ function getMinecraftServerStatus(host, port = 25565, timeout = 500) {
 }
 
 function structChunk(chunks) {
+    if (!chunks.length) {
+        throw new Error('No status response received from server');
+    }
+
     const buffer = Buffer.concat(chunks);
     let offset = 0;
 
@@ -135,6 +176,10 @@ function structChunk(chunks) {
     if (packetId !== 0x00) throw new Error('Invalid Packet ID');
 
     const jsonLength = readVarInt(buffer, () => offset++);
+    if (offset + jsonLength > buffer.length) {
+        throw new Error('Incomplete status response received from server');
+    }
+
     const json = buffer.slice(offset, offset + jsonLength).toString('utf8');
     const parsed = JSON.parse(json);
     if (parsed.favicon) {
