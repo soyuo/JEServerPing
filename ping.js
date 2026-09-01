@@ -77,23 +77,47 @@ function resolveWithTimeout(promise, timeout) {
 }
 
 function getMinecraftServerStatus(host, port = 25565, timeout = 5000) {
-    return new Promise(async (resolve, reject) => {
+    return new Promise(async (resolve) => {
         let resolved;
 
         try {
             resolved = await resolveMinecraft(host, port);
         } catch (e) {
-            reject(e);
+            resolve(createOfflineStatus({ host, port }, e));
             return;
         }
 
         const socket = new net.Socket();
         let chunks = [];
-        let ended = false;
+        let settled = false;
 
         socket.setTimeout(timeout);
         let end = 0;
         const start = Date.now();
+
+        function finish() {
+            if (settled) return;
+            settled = true;
+
+            try {
+                resolve(
+                    Object.assign({
+                        ping: end - start
+                    }, resolved, structChunk(chunks))
+                );
+            } catch (e) {
+                resolve(createOfflineStatus(resolved, e));
+            } finally {
+                socket.destroy();
+            }
+        }
+
+        function fail(err) {
+            if (settled) return;
+            settled = true;
+            resolve(createOfflineStatus(resolved, err));
+            socket.destroy();
+        }
 
         socket.connect({
             host: resolved.host,
@@ -104,7 +128,7 @@ function getMinecraftServerStatus(host, port = 25565, timeout = 5000) {
                 const handshake = [];
 
                 writeVarIntToArray(handshake, 0x00);
-                writeVarIntToArray(handshake, 47);
+                writeVarIntToArray(handshake, -1);
                 writeStringToArray(handshake, host);
                 handshake.push((resolved.port >> 8) & 0xff);
                 handshake.push(resolved.port & 0xff);
@@ -122,50 +146,64 @@ function getMinecraftServerStatus(host, port = 25565, timeout = 5000) {
                     requestPacket
                 ]));
             } catch (e) {
-                reject(e);
-                socket.destroy();
+                fail(e);
             }
         });
 
         socket.on('data', d => {
             chunks.push(d);
             end = Date.now();
+            if (hasCompleteStatusPacket(chunks)) {
+                finish();
+            }
         });
-        socket.on('end', () => ended = true);
 
         socket.on('close', () => {
-            if (!ended) return;
-            try {
-                resolve(
-                    Object.assign({
-                        ping: end - start
-                    }, resolved, structChunk(chunks))
-                );
-            } catch (e) {
-                reject(e);
+            if (chunks.length) {
+                finish();
             }
         });
 
         socket.on('timeout', () => {
-            socket.destroy();
-            try {
-                resolve(
-                    Object.assign({
-                        ping: end - start
-                    }, resolved, structChunk(chunks))
-                );
-            } catch (e) {
-                reject(e);
-            }
+            finish();
         });
 
-        socket.on('error', err => reject(err));
+        socket.on('error', err => fail(err));
     });
+}
+
+function createOfflineStatus(resolved, err) {
+    return {
+        ping: -1,
+        host: resolved.host,
+        port: resolved.port,
+        logs: resolved.logs || [`${resolved.host}:${resolved.port}`],
+        version: null,
+        icon: null,
+        description: "",
+        maxPlayers: -1,
+        onlinePlayers: -1,
+        samplePlayers: [],
+        online: false,
+        error: err?.message || 'Server is unreachable or offline'
+    };
+}
+
+function hasCompleteStatusPacket(chunks) {
+    const buffer = Buffer.concat(chunks);
+    let offset = 0;
+
+    try {
+        const packetLength = readVarInt(buffer, () => offset++);
+        return buffer.length >= offset + packetLength;
+    } catch {
+        return false;
+    }
 }
 
 function structChunk(chunks) {
     if (!chunks.length) {
-        throw new Error('No status response received from server');
+        throw new Error('TCP connected, but no Minecraft status response was received');
     }
 
     const buffer = Buffer.concat(chunks);
@@ -187,12 +225,13 @@ function structChunk(chunks) {
     }
 
     return {
-        version: parsed.version?.name || "알 수 없음",
+        version: parsed.version?.name || null,
         icon: parsed.favicon || null,
         description: getDescription(parsed),
-        maxPlayers: parsed.players.max,
-        onlinePlayers: parsed.players.online,
-        samplePlayers: parsed.players.sample || []
+        maxPlayers: parsed.players?.max ?? -1,
+        onlinePlayers: parsed.players?.online ?? -1,
+        samplePlayers: parsed.players?.sample || [],
+        online: true
     };
 }
 
